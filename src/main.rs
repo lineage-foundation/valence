@@ -40,7 +40,10 @@ async fn main() {
         config.db_protocol, config.db_user, config.db_password, config.db_url, config.db_port
     );
 
-    info!("Initializing system components (max_retries: {})...", config.max_retries);
+    info!(
+        "Initializing system components (max_retries: {})...",
+        config.max_retries
+    );
 
     // Retry Redis connection
     let cache_conn = match retry_with_backoff(

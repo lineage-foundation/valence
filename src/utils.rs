@@ -37,11 +37,11 @@ impl From<ExportedCuckooFilter> for StorageReadyCuckooFilter {
     }
 }
 
-impl Into<ExportedCuckooFilter> for StorageReadyCuckooFilter {
-    fn into(self) -> ExportedCuckooFilter {
+impl From<StorageReadyCuckooFilter> for ExportedCuckooFilter {
+    fn from(cf: StorageReadyCuckooFilter) -> Self {
         ExportedCuckooFilter {
-            values: self.values,
-            length: self.length,
+            values: cf.values,
+            length: cf.length,
         }
     }
 }
@@ -155,7 +155,9 @@ pub async fn init_cuckoo_filter<T: KvStoreConnection>(
         Err(_) => {
             info!("No cuckoo filter found in DB, initializing new one");
             let cf = CuckooFilter::new();
-            save_cuckoo_filter_to_disk(&cf, db).await.map_err(ValenceError::Filter)?;
+            save_cuckoo_filter_to_disk(&cf, db)
+                .await
+                .map_err(ValenceError::Filter)?;
             info!("New cuckoo filter saved to database");
             Ok(cf)
         }

@@ -1,5 +1,4 @@
 /// ==== CONFIG ==== ///
-
 pub const CONFIG_FILE: &str = "config.toml";
 pub const SETTINGS_DEBUG: bool = false;
 pub const SETTINGS_EXTERN_PORT: u16 = 8080;
@@ -16,7 +15,6 @@ pub const SETTINGS_CACHE_TTL: u64 = 600;
 pub const SETTINGS_MAX_RETRIES: usize = 5;
 
 /// ==== DRUID ==== ///
-
 pub const DRUID_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                             abcdefghijklmnopqrstuvwxyz\
                             0123456789";
@@ -24,7 +22,6 @@ pub const DRUID_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
 pub const DRUID_LENGTH: usize = 16;
 
 /// ==== STORAGE ==== ///
-
 pub const DB_KEY: &str = "default";
 pub const CUCKOO_FILTER_KEY: &str = "cuckoo_filter";
 pub const CUCKOO_FILTER_VALUE_ID: &str = "cuckoo_filter_id";
