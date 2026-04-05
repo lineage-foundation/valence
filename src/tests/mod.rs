@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod interfaces;
+pub mod retry_tests;
 
 use crate::api::routes;
 use crate::db::handler::KvStoreConnection;

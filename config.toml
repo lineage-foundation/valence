@@ -11,6 +11,7 @@ db_user = ""
 db_password = ""
 body_limit = 4096
 cache_ttl = 600 # cache lifetime in seconds
+max_retries = 5 # connection retry limit
 
 # Plug-in options
 market = false

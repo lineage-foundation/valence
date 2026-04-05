@@ -2,6 +2,7 @@
 pub mod api;
 pub mod constants;
 pub mod db;
+pub mod error;
 pub mod interfaces;
 pub mod utils;
 
@@ -11,11 +12,12 @@ pub mod tests;
 use crate::api::routes::*;
 use crate::utils::{
     construct_mongodb_conn, construct_redis_conn, init_cuckoo_filter, load_config, print_welcome,
+    retry_with_backoff,
 };
 
 use futures::lock::Mutex;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
 use valence_core::api::utils::handle_rejection;
 
 use warp::Filter;
@@ -24,27 +26,64 @@ use warp::Filter;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = load_config();
+    let config = match load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!("Fatal: Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     let cache_addr = format!("{}:{}", config.cache_url, config.cache_port);
     let db_addr = format!(
         "{}{}:{}@{}:{}",
         config.db_protocol, config.db_user, config.db_password, config.db_url, config.db_port
     );
-    //let db_addr = format!("{}{}:{}", config.db_protocol, config.db_url, config.db_port);
 
-    info!("Connecting to Redis at {}", cache_addr);
-    info!("Connecting to MongoDB at {}", db_addr);
+    info!("Initializing system components (max_retries: {})...", config.max_retries);
 
-    let cache_conn = construct_redis_conn(&cache_addr).await;
-    let db_conn = construct_mongodb_conn(&db_addr).await;
+    // Retry Redis connection
+    let cache_conn = match retry_with_backoff(
+        "Redis Connection",
+        || construct_redis_conn(&cache_addr),
+        config.max_retries,
+        std::time::Duration::from_secs(1),
+    )
+    .await
+    {
+        Ok(conn) => conn,
+        Err(e) => {
+            error!("Fatal: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Retry MongoDB connection
+    let db_conn = match retry_with_backoff(
+        "MongoDB Connection",
+        || construct_mongodb_conn(&db_addr),
+        config.max_retries,
+        std::time::Duration::from_secs(1),
+    )
+    .await
+    {
+        Ok(conn) => conn,
+        Err(e) => {
+            error!("Fatal: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let cf_import = match init_cuckoo_filter(db_conn.clone()).await {
         Ok(cf) => cf,
-        Err(e) => panic!("Failed to initialize cuckoo filter with error: {}", e),
+        Err(e) => {
+            error!("Fatal: Failed to initialize cuckoo filter: {}", e);
+            std::process::exit(1);
+        }
     };
     let cuckoo_filter = Arc::new(Mutex::new(cf_import));
 
-    info!("Cuckoo filter initialized successfully");
+    info!("All system components initialized successfully");
 
     let routes = get_data_with_id(db_conn.clone(), cache_conn.clone(), cuckoo_filter.clone())
         .or(get_data(
