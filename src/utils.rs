@@ -54,7 +54,7 @@ impl Into<ExportedCuckooFilter> for StorageReadyCuckooFilter {
 ///
 /// * `url` - The URL to connect to
 pub async fn construct_mongodb_conn(url: &str) -> Result<Arc<Mutex<MongoDbConn>>, ValenceError> {
-    let mongo_conn = MongoDbConn::init(url).await.map_err(|e| ValenceError::Database(e.to_string()))?;
+    let mongo_conn = MongoDbConn::init(url).await?;
 
     Ok(Arc::new(Mutex::new(mongo_conn)))
 }
@@ -65,7 +65,7 @@ pub async fn construct_mongodb_conn(url: &str) -> Result<Arc<Mutex<MongoDbConn>>
 ///
 /// * `url` - The URL to connect to
 pub async fn construct_redis_conn(url: &str) -> Result<Arc<Mutex<RedisCacheConn>>, ValenceError> {
-    let redis_conn = RedisCacheConn::init(url).await.map_err(|e| ValenceError::Cache(e.to_string()))?;
+    let redis_conn = RedisCacheConn::init(url).await?;
 
     Ok(Arc::new(Mutex::new(redis_conn)))
 }
@@ -174,49 +174,48 @@ pub fn load_config() -> Result<EnvConfig, ValenceError> {
         .add_source(config::File::with_name(CONFIG_FILE))
         .add_source(config::Environment::default());
 
-    match settings.build() {
-        Ok(config) => Ok(EnvConfig {
-            debug: config.get_bool("debug").unwrap_or(SETTINGS_DEBUG),
-            extern_port: config
-                .get_int("extern_port")
-                .unwrap_or(SETTINGS_EXTERN_PORT as i64) as u16,
-            db_url: config
-                .get_string("db_url")
-                .unwrap_or(SETTINGS_DB_URL.to_string()),
-            db_user: config
-                .get_string("db_user")
-                .unwrap_or(SETTINGS_DB_USER.to_string()),
-            db_protocol: config
-                .get_string("db_protocol")
-                .unwrap_or(SETTINGS_DB_PROTOCOL.to_string()),
-            db_port: config
-                .get_string("db_port")
-                .unwrap_or(SETTINGS_DB_PORT.to_string()),
-            db_password: config
-                .get_string("db_password")
-                .unwrap_or(SETTINGS_DB_PASSWORD.to_string()),
-            cache_url: config
-                .get_string("cache_url")
-                .unwrap_or(SETTINGS_CACHE_URL.to_string()),
-            cache_port: config
-                .get_string("cache_port")
-                .unwrap_or(SETTINGS_CACHE_PORT.to_string()),
-            cache_password: config
-                .get_string("cache_password")
-                .unwrap_or(SETTINGS_CACHE_PASSWORD.to_string()),
-            body_limit: config
-                .get_int("body_limit")
-                .unwrap_or(SETTINGS_BODY_LIMIT as i64) as u64,
-            cache_ttl: config
-                .get_int("cache_ttl")
-                .unwrap_or(SETTINGS_CACHE_TTL as i64) as usize,
-            max_retries: config
-                .get_int("max_retries")
-                .unwrap_or(SETTINGS_MAX_RETRIES as i64) as usize,
-            market: config.get_bool("market").unwrap_or(false),
-        }),
-        Err(e) => Err(ValenceError::Config(e.to_string())),
-    }
+    let config = settings.build()?;
+
+    Ok(EnvConfig {
+        debug: config.get_bool("debug").unwrap_or(SETTINGS_DEBUG),
+        extern_port: config
+            .get_int("extern_port")
+            .unwrap_or(SETTINGS_EXTERN_PORT as i64) as u16,
+        db_url: config
+            .get_string("db_url")
+            .unwrap_or(SETTINGS_DB_URL.to_string()),
+        db_user: config
+            .get_string("db_user")
+            .unwrap_or(SETTINGS_DB_USER.to_string()),
+        db_protocol: config
+            .get_string("db_protocol")
+            .unwrap_or(SETTINGS_DB_PROTOCOL.to_string()),
+        db_port: config
+            .get_string("db_port")
+            .unwrap_or(SETTINGS_DB_PORT.to_string()),
+        db_password: config
+            .get_string("db_password")
+            .unwrap_or(SETTINGS_DB_PASSWORD.to_string()),
+        cache_url: config
+            .get_string("cache_url")
+            .unwrap_or(SETTINGS_CACHE_URL.to_string()),
+        cache_port: config
+            .get_string("cache_port")
+            .unwrap_or(SETTINGS_CACHE_PORT.to_string()),
+        cache_password: config
+            .get_string("cache_password")
+            .unwrap_or(SETTINGS_CACHE_PASSWORD.to_string()),
+        body_limit: config
+            .get_int("body_limit")
+            .unwrap_or(SETTINGS_BODY_LIMIT as i64) as u64,
+        cache_ttl: config
+            .get_int("cache_ttl")
+            .unwrap_or(SETTINGS_CACHE_TTL as i64) as usize,
+        max_retries: config
+            .get_int("max_retries")
+            .unwrap_or(SETTINGS_MAX_RETRIES as i64) as usize,
+        market: config.get_bool("market").unwrap_or(false),
+    })
 }
 
 /// Helper function to retry an async operation with exponential backoff

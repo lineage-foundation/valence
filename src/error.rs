@@ -24,7 +24,6 @@ impl fmt::Display for ValenceError {
 
 impl std::error::Error for ValenceError {}
 
-// Manual From implementations to maintain the String-based variants while enabling '?'
 impl From<config::ConfigError> for ValenceError {
     fn from(error: config::ConfigError) -> Self {
         ValenceError::Config(error.to_string())
