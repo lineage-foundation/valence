@@ -27,12 +27,8 @@ pub async fn retrieve_from_db<D: KvStoreConnection + Clone + Send + 'static>(
 
     match db_result {
         Ok(data) => match data {
-            Some(value) => {
-                return r.into_ok("Data retrieved successfully", json_serialize_embed(value));
-            }
-            None => {
-                return r.into_err_internal(ApiErrorType::DataNotFound);
-            }
+            Some(value) => r.into_ok("Data retrieved successfully", json_serialize_embed(value)),
+            None => r.into_err_internal(ApiErrorType::DataNotFound),
         },
         Err(_) => r.into_err_internal(ApiErrorType::DBQueryFailed),
     }

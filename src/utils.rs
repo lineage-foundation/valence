@@ -2,11 +2,12 @@ use crate::constants::{
     CONFIG_FILE, CUCKOO_FILTER_KEY, CUCKOO_FILTER_VALUE_ID, DRUID_CHARSET, DRUID_LENGTH,
     SETTINGS_BODY_LIMIT, SETTINGS_CACHE_PASSWORD, SETTINGS_CACHE_PORT, SETTINGS_CACHE_TTL,
     SETTINGS_CACHE_URL, SETTINGS_DB_PASSWORD, SETTINGS_DB_PORT, SETTINGS_DB_PROTOCOL,
-    SETTINGS_DB_URL, SETTINGS_DB_USER, SETTINGS_DEBUG, SETTINGS_EXTERN_PORT,
+    SETTINGS_DB_URL, SETTINGS_DB_USER, SETTINGS_DEBUG, SETTINGS_EXTERN_PORT, SETTINGS_MAX_RETRIES,
 };
 use crate::db::handler::KvStoreConnection;
 use crate::db::mongo_db::MongoDbConn;
 use crate::db::redis_cache::RedisCacheConn;
+use crate::error::ValenceError;
 use crate::interfaces::EnvConfig;
 use chrono::prelude::*;
 use cuckoofilter::{CuckooFilter, ExportedCuckooFilter};
@@ -15,7 +16,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
-use tracing::info;
+use std::time::Duration;
+use tracing::{info, warn};
 
 // ========== STORAGE SERIALIZATION FOR CUCKOO FILTER ========== //
 
@@ -35,11 +37,11 @@ impl From<ExportedCuckooFilter> for StorageReadyCuckooFilter {
     }
 }
 
-impl Into<ExportedCuckooFilter> for StorageReadyCuckooFilter {
-    fn into(self) -> ExportedCuckooFilter {
+impl From<StorageReadyCuckooFilter> for ExportedCuckooFilter {
+    fn from(cf: StorageReadyCuckooFilter) -> Self {
         ExportedCuckooFilter {
-            values: self.values,
-            length: self.length,
+            values: cf.values,
+            length: cf.length,
         }
     }
 }
@@ -51,13 +53,10 @@ impl Into<ExportedCuckooFilter> for StorageReadyCuckooFilter {
 /// ### Arguments
 ///
 /// * `url` - The URL to connect to
-pub async fn construct_mongodb_conn(url: &str) -> Arc<Mutex<MongoDbConn>> {
-    let mongo_conn = match MongoDbConn::init(url).await {
-        Ok(conn) => conn,
-        Err(e) => panic!("Failed to connect to MongoDB with error: {}", e),
-    };
+pub async fn construct_mongodb_conn(url: &str) -> Result<Arc<Mutex<MongoDbConn>>, ValenceError> {
+    let mongo_conn = MongoDbConn::init(url).await?;
 
-    Arc::new(Mutex::new(mongo_conn))
+    Ok(Arc::new(Mutex::new(mongo_conn)))
 }
 
 /// Constructs a Redis cache connection
@@ -65,13 +64,10 @@ pub async fn construct_mongodb_conn(url: &str) -> Arc<Mutex<MongoDbConn>> {
 /// ### Arguments
 ///
 /// * `url` - The URL to connect to
-pub async fn construct_redis_conn(url: &str) -> Arc<Mutex<RedisCacheConn>> {
-    let redis_conn = match RedisCacheConn::init(url).await {
-        Ok(conn) => conn,
-        Err(e) => panic!("Failed to connect to Redis with error: {}", e),
-    };
+pub async fn construct_redis_conn(url: &str) -> Result<Arc<Mutex<RedisCacheConn>>, ValenceError> {
+    let redis_conn = RedisCacheConn::init(url).await?;
 
-    Arc::new(Mutex::new(redis_conn))
+    Ok(Arc::new(Mutex::new(redis_conn)))
 }
 
 // ========== CUCKOO FILTER UTILS ========== //
@@ -150,7 +146,7 @@ pub async fn load_cuckoo_filter_from_disk<T: KvStoreConnection>(
 /// * `db` - The database connection
 pub async fn init_cuckoo_filter<T: KvStoreConnection>(
     db: Arc<Mutex<T>>,
-) -> Result<CuckooFilter<DefaultHasher>, String> {
+) -> Result<CuckooFilter<DefaultHasher>, ValenceError> {
     match load_cuckoo_filter_from_disk(db.clone()).await {
         Ok(cf) => {
             info!("Cuckoo filter loaded from DB");
@@ -159,7 +155,9 @@ pub async fn init_cuckoo_filter<T: KvStoreConnection>(
         Err(_) => {
             info!("No cuckoo filter found in DB, initializing new one");
             let cf = CuckooFilter::new();
-            save_cuckoo_filter_to_disk(&cf, db).await.unwrap();
+            save_cuckoo_filter_to_disk(&cf, db)
+                .await
+                .map_err(ValenceError::Filter)?;
             info!("New cuckoo filter saved to database");
             Ok(cf)
         }
@@ -169,7 +167,7 @@ pub async fn init_cuckoo_filter<T: KvStoreConnection>(
 // ========== CONFIG UTILS ========== //
 
 /// Loads the config file
-pub fn load_config() -> EnvConfig {
+pub fn load_config() -> Result<EnvConfig, ValenceError> {
     // Load variables from a .env file into process environment if present
     dotenvy::dotenv().ok();
 
@@ -178,48 +176,91 @@ pub fn load_config() -> EnvConfig {
         .add_source(config::File::with_name(CONFIG_FILE))
         .add_source(config::Environment::default());
 
-    match settings.build() {
-        Ok(config) => EnvConfig {
-            debug: config.get_bool("debug").unwrap_or(SETTINGS_DEBUG),
-            extern_port: config
-                .get_int("extern_port")
-                .unwrap_or(SETTINGS_EXTERN_PORT as i64) as u16,
-            db_url: config
-                .get_string("db_url")
-                .unwrap_or(SETTINGS_DB_URL.to_string()),
-            db_user: config
-                .get_string("db_user")
-                .unwrap_or(SETTINGS_DB_USER.to_string()),
-            db_protocol: config
-                .get_string("db_protocol")
-                .unwrap_or(SETTINGS_DB_PROTOCOL.to_string()),
-            db_port: config
-                .get_string("db_port")
-                .unwrap_or(SETTINGS_DB_PORT.to_string()),
-            db_password: config
-                .get_string("db_password")
-                .unwrap_or(SETTINGS_DB_PASSWORD.to_string()),
-            cache_url: config
-                .get_string("cache_url")
-                .unwrap_or(SETTINGS_CACHE_URL.to_string()),
-            cache_port: config
-                .get_string("cache_port")
-                .unwrap_or(SETTINGS_CACHE_PORT.to_string()),
-            cache_password: config
-                .get_string("cache_password")
-                .unwrap_or(SETTINGS_CACHE_PASSWORD.to_string()),
-            body_limit: config
-                .get_int("body_limit")
-                .unwrap_or(SETTINGS_BODY_LIMIT as i64) as u64,
-            cache_ttl: config
-                .get_int("cache_ttl")
-                .unwrap_or(SETTINGS_CACHE_TTL as i64) as usize,
-            market: config.get_bool("market").unwrap_or(false),
-        },
-        Err(e) => {
-            panic!("Failed to load config file with error: {e}")
+    let config = settings.build()?;
+
+    Ok(EnvConfig {
+        debug: config.get_bool("debug").unwrap_or(SETTINGS_DEBUG),
+        extern_port: config
+            .get_int("extern_port")
+            .unwrap_or(SETTINGS_EXTERN_PORT as i64) as u16,
+        db_url: config
+            .get_string("db_url")
+            .unwrap_or(SETTINGS_DB_URL.to_string()),
+        db_user: config
+            .get_string("db_user")
+            .unwrap_or(SETTINGS_DB_USER.to_string()),
+        db_protocol: config
+            .get_string("db_protocol")
+            .unwrap_or(SETTINGS_DB_PROTOCOL.to_string()),
+        db_port: config
+            .get_string("db_port")
+            .unwrap_or(SETTINGS_DB_PORT.to_string()),
+        db_password: config
+            .get_string("db_password")
+            .unwrap_or(SETTINGS_DB_PASSWORD.to_string()),
+        cache_url: config
+            .get_string("cache_url")
+            .unwrap_or(SETTINGS_CACHE_URL.to_string()),
+        cache_port: config
+            .get_string("cache_port")
+            .unwrap_or(SETTINGS_CACHE_PORT.to_string()),
+        cache_password: config
+            .get_string("cache_password")
+            .unwrap_or(SETTINGS_CACHE_PASSWORD.to_string()),
+        body_limit: config
+            .get_int("body_limit")
+            .unwrap_or(SETTINGS_BODY_LIMIT as i64) as u64,
+        cache_ttl: config
+            .get_int("cache_ttl")
+            .unwrap_or(SETTINGS_CACHE_TTL as i64) as usize,
+        max_retries: config
+            .get_int("max_retries")
+            .unwrap_or(SETTINGS_MAX_RETRIES as i64) as usize,
+        market: config.get_bool("market").unwrap_or(false),
+    })
+}
+
+/// Helper function to retry an async operation with exponential backoff
+pub async fn retry_with_backoff<T, F, Fut>(
+    name: &str,
+    mut f: F,
+    max_retries: usize,
+    initial_delay: Duration,
+) -> Result<T, ValenceError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, ValenceError>>,
+{
+    let mut delay = initial_delay;
+
+    for i in 0..max_retries {
+        match f().await {
+            Ok(res) => return Ok(res),
+            Err(e) => {
+                if i == max_retries - 1 {
+                    return Err(ValenceError::RetryLimitExceeded(format!(
+                        "Failed {} after {} retries: {}",
+                        name, max_retries, e
+                    )));
+                }
+
+                warn!(
+                    "{} attempt {} failed, retrying in {:?}... Error: {}",
+                    name,
+                    i + 1,
+                    delay,
+                    e
+                );
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
         }
     }
+
+    Err(ValenceError::RetryLimitExceeded(format!(
+        "Failed {} after {} retries",
+        name, max_retries
+    )))
 }
 
 // ========== MISC UTILS ========== //

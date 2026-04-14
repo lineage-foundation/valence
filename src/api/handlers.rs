@@ -73,10 +73,10 @@ pub async fn get_data_handler<
 
                     let final_value = serialize_all_entries(value);
 
-                    return r.into_ok(
+                    r.into_ok(
                         "Data retrieved successfully",
                         json_serialize_embed(final_value),
-                    );
+                    )
                 }
                 None => {
                     // Default to checking from DB if cache is empty
@@ -227,11 +227,11 @@ pub async fn del_data_handler<
     match cache_result {
         Ok(_) => {
             debug!("Data deleted from cache");
-            return delete_from_db(db, address, value_id.as_deref()).await;
+            delete_from_db(db, address, value_id.as_deref()).await
         }
         Err(_) => {
             error!("Cache deletion failed for address: {}", address);
-            return r.into_err_internal(ApiErrorType::CacheDeleteFailed);
+            r.into_err_internal(ApiErrorType::CacheDeleteFailed)
         }
     }
 }

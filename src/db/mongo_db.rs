@@ -269,7 +269,7 @@ impl KvStoreConnection for MongoDbConn {
 
             match collection.find_one_and_update(filter, update, None).await {
                 Ok(result) => {
-                    if let Some(_) = result {
+                    if result.is_some() {
                         // Document was found and updated, log success or handle as needed
                         trace!("Data updated successfully");
                     } else {

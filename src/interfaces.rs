@@ -33,6 +33,7 @@ pub struct EnvConfig {
     pub cache_password: String,
     pub body_limit: u64,
     pub cache_ttl: usize,
+    pub max_retries: usize,
 
     pub market: bool,
 }
