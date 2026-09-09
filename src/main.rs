@@ -1,118 +1,63 @@
 // main.rs
-pub mod api;
-pub mod constants;
-pub mod db;
-pub mod error;
-pub mod interfaces;
-pub mod utils;
+pub mod auth;
+pub mod config;
+pub mod messages;
+pub mod store;
 
-#[cfg(test)]
-pub mod tests;
-
-use crate::api::routes::*;
-use crate::utils::{
-    construct_mongodb_conn, construct_redis_conn, init_cuckoo_filter, load_config, print_welcome,
-    retry_with_backoff,
-};
-
-use futures::lock::Mutex;
 use std::sync::Arc;
-use tracing::{error, info};
-use valence_core::api::utils::handle_rejection;
 
-use warp::Filter;
+use axum::{routing::get, Router};
+use messages::MessagesState;
+use store::RedisStore;
+use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = match load_config() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            error!("Fatal: Failed to load configuration: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let cache_addr = format!("{}:{}", config.cache_url, config.cache_port);
-    let db_addr = format!(
-        "{}{}:{}@{}:{}",
-        config.db_protocol, config.db_user, config.db_password, config.db_url, config.db_port
-    );
+    let cfg = config::load();
 
     info!(
-        "Initializing system components (max_retries: {})...",
-        config.max_retries
+        "Config loaded: extern_port={} cache_url={} cache_ttl_secs={} body_limit_bytes={} debug={}",
+        cfg.extern_port, cfg.cache_url, cfg.cache_ttl_secs, cfg.body_limit_bytes, cfg.debug
     );
 
-    // Retry Redis connection
-    let cache_conn = match retry_with_backoff(
-        "Redis Connection",
-        || construct_redis_conn(&cache_addr),
-        config.max_retries,
-        std::time::Duration::from_secs(1),
-    )
-    .await
-    {
-        Ok(conn) => conn,
+    let redis_store = match RedisStore::connect(&cfg.cache_url).await {
+        Ok(store) => store,
         Err(e) => {
-            error!("Fatal: {}", e);
-            std::process::exit(1);
+            error!("Failed to connect to Redis at {}: {e}", cfg.cache_url);
+            return;
         }
     };
 
-    // Retry MongoDB connection
-    let db_conn = match retry_with_backoff(
-        "MongoDB Connection",
-        || construct_mongodb_conn(&db_addr),
-        config.max_retries,
-        std::time::Duration::from_secs(1),
-    )
-    .await
-    {
-        Ok(conn) => conn,
+    let messages_state = MessagesState {
+        store: Arc::new(redis_store),
+        ttl_secs: cfg.cache_ttl_secs,
+    };
+
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .merge(messages::router(messages_state))
+        .layer(CorsLayer::permissive())
+        .layer(RequestBodyLimitLayer::new(cfg.body_limit_bytes));
+
+    let addr = format!("[::]:{}", cfg.extern_port);
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
         Err(e) => {
-            error!("Fatal: {}", e);
-            std::process::exit(1);
+            error!("Failed to bind to {addr}: {e}");
+            return;
         }
     };
 
-    let cf_import = match init_cuckoo_filter(db_conn.clone()).await {
-        Ok(cf) => cf,
-        Err(e) => {
-            error!("Fatal: Failed to initialize cuckoo filter: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let cuckoo_filter = Arc::new(Mutex::new(cf_import));
+    info!("Listening on {addr}");
 
-    info!("All system components initialized successfully");
+    if let Err(e) = axum::serve(listener, app).await {
+        error!("Server error: {e}");
+    }
+}
 
-    let routes = get_data_with_id(db_conn.clone(), cache_conn.clone(), cuckoo_filter.clone())
-        .or(get_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-        ))
-        .or(set_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-            config.body_limit,
-            config.cache_ttl,
-        ))
-        .or(del_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-        ))
-        .recover(handle_rejection);
-
-    print_welcome(&db_addr, &cache_addr);
-
-    info!("Server running at localhost:{}", config.extern_port);
-
-    warp::serve(routes)
-        .run(([0, 0, 0, 0], config.extern_port))
-        .await;
+async fn healthz() -> &'static str {
+    "ok"
 }

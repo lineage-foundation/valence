@@ -10,13 +10,8 @@
 
   <h3>Lineage Valence</h3>
 
-  <!-- <div>
-  <img src="https://img.shields.io/github/actions/workflow/status/Zenotta/Intercom/codeql-analysis.yml?branch=main" alt="Pipeline Status" />
-    <img src="https://img.shields.io/github/package-json/v/Zenotta/Intercom" />
-  </div> -->
-
   <p align="center">
-    Lineage L2 node for data exchange between peers, with E2E encryption.
+    An axum REST relay for exchanging E2E-encrypted data between peers.
     <br />
     <br />
     <a href="https://lineage.foundation"><strong>Lineage Foundation »</strong></a>
@@ -31,178 +26,129 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
+    <li><a href="#how-it-works">How it Works</a></li>
     <li>
       <a href="#getting-started">Getting Started</a>
       <ul>
         <li><a href="#prerequisites">Prerequisites</a></li>
-        <li><a href="#installation">Installation</a></li>
         <li><a href="#running-the-server">Running the server</a></li>
       </ul>
     </li>
+    <li><a href="#configuration">Configuration</a></li>
     <li>
-      <a href="#how-it-works">How it Works</a>
+      <a href="#messages-api">Messages API</a>
       <ul>
-        <li>
-            <a href="#available-routes">Available Routes</a>
-            <ul>
-                <li><a href="#set_data">set_data</a></li>
-                <li><a href="#get_data">get_data</a></li>
-                <li><a href="#del_data">del_data</a></li>
-            </ul>
-        </li>
-        <li><a href="#further-work">Further Work</a></li>
-        </ul>
+        <li><a href="#authentication">Authentication</a></li>
+        <li><a href="#routes">Routes</a></li>
+      </ul>
     </li>
   </ol>
 </details>
 
-<!-- GETTING STARTED -->
+## How it Works
+
+Valence is a per-mailbox store of end-to-end encrypted blobs, backed by **Redis only** (no MongoDB, no cuckoo filter). Clients exchange data with each other through public key addresses. If Alice wants to send data to Bob, she `POST`s it to Bob's mailbox (Bob's address) under a signed request. The next time Bob calls `GET` on his own mailbox, he'll find what Alice sent.
+
+Valence never sees plaintext: clients are expected to encrypt payloads for the recipient before sending, so the relay only ever stores and forwards ciphertext.
+
+<p align="left">(<a href="#top">back to top</a>)</p>
 
 ## Getting Started
 
-### 📚 Prerequisites
+### Prerequisites
 
-In order to run this server as a community provider, or simply to use it yourself, you'll need to have <a href="https://www.docker.com/products/docker-desktop/">Docker</a> installed (minimum tested v20.10.12) and be comfortable working with the command line. 
+- **Rust** (2021 edition)
+- A Redis instance (any recent version)
 
-If you'd like to develop on this repo, you'll have the following additional requirements:
+### Running the server
 
-- **Rust** (tested on 1.68.0 nightly)
-
-..
-
-<p align="left">(<a href="#top">back to top</a>)</p>
-
-..
-
-### 🔧 Installation
-
-With Docker installed and running, you can clone this repo and get everything installed with the following:
+Start a Redis instance:
 
 ```sh
-# SSH clone
-git clone git@gitlab.com:ABlockOfficial/Valence.git
-
-# Navigate to the repo
-cd Valence
-
-# Build Docker image
-docker build -t valence .
+docker run -p 6379:6379 redis:6.2.6-alpine
 ```
 
-<p align="left">(<a href="#top">back to top</a>)</p>
-
-..
-
-### 🏎️ Running the server
-
-To use the server as is, you can simply run the following in the root folder of the repo:
+Then run Valence:
 
 ```sh
-docker-compose up -d
-```
-
-Docker will orchestrate the node itself, the Redis instance, and the MongoDB long-term storage, after which you can make 
-calls to your server at port **3030**. Data saved to the Redis and MongoDB instances is kept within a Docker volume.
-
-To run the server in a development environment, run the following command:
-
-```sh
-cargo build --release
-
 cargo run --release
 ```
 
-<p align="left">(<a href="#top">back to top</a>)</p>
+With no configuration at all, Valence listens on port `3030` and connects to `redis://127.0.0.1:6379`. See [`.env.example`](.env.example) for the full set of overrides.
 
-..
-
-## How it Works
-
-The server functions on a very basic set of rules. Clients exchange data between each other through the use of public key addresses. If Alice wants to exchange data with Bob, she will need to supply the Valence node with Bob's address, as well as her own address, public key, and signature in the call headers. The next time Bob fetches data from the server using his public key address, he would find that Alice has exchanged data to him.
+A `Dockerfile` is also provided for building a distroless production image; there is no bundled `docker-compose.yml` — point `VALENCE_CACHE_URL` at whatever Redis you're running.
 
 <p align="left">(<a href="#top">back to top</a>)</p>
 
-..
+## Configuration
 
-### 🔌 Available Routes
+Valence is configured via environment variables (optionally loaded from a `.env` file), layered over built-in defaults. An optional `config.toml`/`config.*` file in the working directory can also supply values, taking precedence over the built-in defaults but not over environment variables.
 
-#### **<img src="https://img.shields.io/badge/POST-07BEB8" alt="POST"/> `set_data`**
-Sets data in the Redis instance and marks it for pending retrieval in the server. To send data to Bob, we could use the following headers in the `set_data` call:
+| Variable                    | Default                     | Description                                   |
+| ---------------------------- | ---------------------------- | ---------------------------------------------- |
+| `VALENCE_EXTERN_PORT`        | `3030`                       | Port the server listens on                     |
+| `VALENCE_CACHE_URL`          | `redis://127.0.0.1:6379`     | Redis connection URL                           |
+| `VALENCE_CACHE_TTL_SECS`     | `600`                        | TTL applied to stored messages                 |
+| `VALENCE_BODY_LIMIT_BYTES`   | `8192`                       | Max accepted request body size, in bytes       |
+| `VALENCE_DEBUG`              | `false`                      | Enable debug behavior/logging                  |
+
+Nothing on this path panics on a missing or unparsable source — configuration simply falls back to the defaults above.
+
+<p align="left">(<a href="#top">back to top</a>)</p>
+
+## Messages API
+
+### Authentication
+
+Every route under `/messages` requires three headers, verified before the request is handled:
 
 ```json
 {
-    "address": "76e...dd6",     // Bob's public key address
-    "public_key": "a4c...e45",   // Alice's public key
-    "signature": "b9f...506"     // Alice's signature of Bob's address, using his public key
+  "address": "76e...dd6",     // caller's address — also the mailbox key
+  "public_key": "a4c...e45",  // caller's ed25519 public key, hex-encoded
+  "signature": "b9f...506"    // hex-encoded ed25519 detached signature over `address`'s raw UTF-8 bytes
 }
 ```
 
-The body of the `set_data` call would contain the `value_id` for that entry and the `data` being exchanged :
+A request is accepted iff `signature` is a valid detached signature of `address` under `public_key` — i.e. the caller proves control of `public_key` and signed the target address. This is intentionally **verify-only**: there is no `address == derived-from(public_key)` binding, since a sender addresses mail to a *recipient's* address while signing with their *own* key (this matches how the [tw_chain](https://crates.io/crates/tw_chain)-based Lineage/AIBlock JS SDK signs). Confidentiality comes from the payload being E2E-encrypted for the recipient, not from mailbox access control.
+
+### Routes
+
+All routes below require the headers described above; `address` selects the mailbox being read from or written to.
+
+#### `POST /messages`
+
+Stores an entry in the caller-addressed mailbox.
+
+Body:
 
 ```json
-{
-    "data_id": "EntryId"
-    "data": "hello Bob"
-}
+{ "id": "EntryId", "data": "hello Bob" }
 ```
 
-`data_id` is required and allows for mutiple entries under one address. If the `data_id` value is the same as an existing entry for that address, it is updated. If the `data_id` is unique it will be added to the hashmap for that address
+`id` is required and allows multiple entries per mailbox — posting with an existing `id` overwrites that entry. Returns `201 Created` with `{ "id": "EntryId" }`.
 
-The headers that Alice sends in her call will be validated by the Valence, after which they'll be stored at Bob's address for his later retrieval using the `get_data` call.
+#### `GET /messages`
 
-..
+Returns the full mailbox as an `id -> data` map, e.g. `{ "msg1": { "hello": "world" } }`.
 
-##### **<img src="https://img.shields.io/badge/GET-2176FF" alt="GET"/> `get_data`**
-Gets pending data from the server for a given address. To retrieve data for Bob, he only has to supply his credentials in the call header:
+#### `GET /messages/{id}`
 
-```json
-[
-    {
-        "address": "76e...dd6",     // Bob's public key address
-        "public_key": "a4c...e45"   // Bob's public key corresponding to his address
-        "signature": "b9f...506",   // Bob's signature of the public key
-    }
-]
-```
+Returns a single entry as `{ "id": "...", "data": ... }`, or `404` if not found.
 
-If `data_id` is provided in the request (`get_data/[value_id]`), the specific entry associated to that id is retrieved. If no `data_id` is provided, the full hashmap is retrieved.
+#### `DELETE /messages/{id}`
 
-Again, the Valence will validate the signature before returning the data to Bob.
+Deletes a single entry. Returns `204 No Content`.
 
-##### **<img src="https://img.shields.io/badge/DEL-FF0000" alt="DEL"/> `del_data`**
-Delete pending data from the server for a given address. To delete data for Bob, he only has to supply his credentials in the call header:
+#### `DELETE /messages`
 
-```json
-[
-    {
-        "address": "76e...dd6",     // Bob's public key address
-        "public_key": "a4c...e45"   // Bob's public key corresponding to his address
-        "signature": "b9f...506",   // Bob's signature of the public key
-    }
-]
-```
+Clears the entire mailbox. Returns `204 No Content`.
 
-If `data_id` is provided in the request (`del_data/[value_id]`), the specific entry associated to that id is deleted. If no `data_id` is provided, the full hashmap is deleted.
+#### `GET /healthz`
 
-Again, the Valence will validate the signature before returning the data to Bob.
-
-**For best practice, it's recommended that Alice and Bob encrypt their data using their private keys, before exchanging it with each other.** This ensures that the data exchange is E2E encrypted, and that the Valence maintains no knowledge of the data's content.
+Unauthenticated liveness check; returns `200 ok`.
 
 <p align="left">(<a href="#top">back to top</a>)</p>
-
-..
-
-### Further Work
-
-- [x] Match public key to address for `get_data` (resolved by using address directly for retrieval)
-- [ ] Add a rate limiting mechanism
-- [x] Set Redis keys to expire (handle cache lifetimes)
-- [x] Handle multiple data entries per address
-- [ ] Add tests
-
-<p align="left">(<a href="#top">back to top</a>)</p>
-
-..
 
 ## Links
 
@@ -216,5 +162,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
-
-..
