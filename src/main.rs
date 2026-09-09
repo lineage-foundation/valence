@@ -1,15 +1,16 @@
 // main.rs
 pub mod auth;
 pub mod config;
+pub mod messages;
+pub mod store;
 
-// TODO(next slice): re-introduce request/response types and Redis storage
-// modules (previously `interfaces`, `api`, `db`, `constants`, `utils`)
-// rebuilt on axum + Redis instead of warp + valence_core + Mongo.
+use std::sync::Arc;
 
-use auth::AuthedAddress;
 use axum::{routing::get, Router};
+use messages::MessagesState;
+use store::RedisStore;
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
-use tracing::info;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() {
@@ -22,14 +23,22 @@ async fn main() {
         cfg.extern_port, cfg.cache_url, cfg.cache_ttl_secs, cfg.body_limit_bytes, cfg.debug
     );
 
-    // TODO(next slice): wire up Redis connection using cfg.cache_url / cfg.cache_ttl_secs
-    // TODO(next slice): add /messages routes using the AuthedAddress extractor
+    let redis_store = match RedisStore::connect(&cfg.cache_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            error!("Failed to connect to Redis at {}: {e}", cfg.cache_url);
+            return;
+        }
+    };
+
+    let messages_state = MessagesState {
+        store: Arc::new(redis_store),
+        ttl_secs: cfg.cache_ttl_secs,
+    };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
-        // Temporary authed probe route demonstrating the AuthedAddress
-        // extractor ahead of the /messages handlers landing.
-        .route("/whoami", get(whoami))
+        .merge(messages::router(messages_state))
         .layer(CorsLayer::permissive())
         .layer(RequestBodyLimitLayer::new(cfg.body_limit_bytes));
 
@@ -37,7 +46,7 @@ async fn main() {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => listener,
         Err(e) => {
-            tracing::error!("Failed to bind to {addr}: {e}");
+            error!("Failed to bind to {addr}: {e}");
             return;
         }
     };
@@ -45,14 +54,10 @@ async fn main() {
     info!("Listening on {addr}");
 
     if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!("Server error: {e}");
+        error!("Server error: {e}");
     }
 }
 
 async fn healthz() -> &'static str {
     "ok"
-}
-
-async fn whoami(AuthedAddress(address): AuthedAddress) -> String {
-    address
 }
