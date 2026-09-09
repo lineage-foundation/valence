@@ -3,30 +3,11 @@
 ####################################################################################################
 FROM rust:latest AS builder
 
-RUN rustup target add x86_64-unknown-linux-musl
-RUN apt update && apt install -y musl-tools musl-dev
-RUN update-ca-certificates
-
-# Create appuser
-ENV USER=valence
-ENV UID=10001
-
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --home "/nonexistent" \
-    --shell "/sbin/nologin" \
-    --no-create-home \
-    --uid "${UID}" \
-    "${USER}"
-
-
 WORKDIR /valence
 
 COPY ./ .
-COPY ./config.toml ./
 
-RUN cargo build --target x86_64-unknown-linux-musl --release
+RUN cargo build --release
 
 ####################################################################################################
 ## Final image
@@ -37,8 +18,8 @@ USER nonroot
 
 WORKDIR /valence
 
-# Copy our build
-COPY --from=builder /valence/target/x86_64-unknown-linux-musl/release/valence ./
+# Copy the release binary and the optional default config (env vars override it).
+COPY --from=builder /valence/target/release/valence ./
 COPY --from=builder /valence/config.toml ./
 
 CMD ["/valence/valence"]
