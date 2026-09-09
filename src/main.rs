@@ -1,10 +1,12 @@
 // main.rs
+pub mod auth;
 pub mod config;
 
-// TODO(next slice): re-introduce request/response types, auth, and Redis
-// storage modules (previously `interfaces`, `api`, `db`, `constants`,
-// `utils`) rebuilt on axum + Redis instead of warp + valence_core + Mongo.
+// TODO(next slice): re-introduce request/response types and Redis storage
+// modules (previously `interfaces`, `api`, `db`, `constants`, `utils`)
+// rebuilt on axum + Redis instead of warp + valence_core + Mongo.
 
+use auth::AuthedAddress;
 use axum::{routing::get, Router};
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
 use tracing::info;
@@ -21,10 +23,13 @@ async fn main() {
     );
 
     // TODO(next slice): wire up Redis connection using cfg.cache_url / cfg.cache_ttl_secs
-    // TODO(next slice): add /messages routes and auth middleware
+    // TODO(next slice): add /messages routes using the AuthedAddress extractor
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        // Temporary authed probe route demonstrating the AuthedAddress
+        // extractor ahead of the /messages handlers landing.
+        .route("/whoami", get(whoami))
         .layer(CorsLayer::permissive())
         .layer(RequestBodyLimitLayer::new(cfg.body_limit_bytes));
 
@@ -46,4 +51,8 @@ async fn main() {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn whoami(AuthedAddress(address): AuthedAddress) -> String {
+    address
 }
