@@ -1,76 +1,49 @@
 // main.rs
-pub mod api;
-pub mod constants;
-pub mod db;
-pub mod interfaces;
-pub mod utils;
+pub mod config;
 
-#[cfg(test)]
-pub mod tests;
+// TODO(next slice): re-introduce request/response types, auth, and Redis
+// storage modules (previously `interfaces`, `api`, `db`, `constants`,
+// `utils`) rebuilt on axum + Redis instead of warp + valence_core + Mongo.
 
-use crate::api::routes::*;
-use crate::utils::{
-    construct_mongodb_conn, construct_redis_conn, init_cuckoo_filter, load_config, print_welcome,
-};
-
-use futures::lock::Mutex;
-use std::sync::Arc;
+use axum::{routing::get, Router};
+use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
 use tracing::info;
-use valence_core::api::utils::handle_rejection;
-
-use warp::Filter;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = load_config();
-    let cache_addr = format!("{}:{}", config.cache_url, config.cache_port);
-    let db_addr = format!(
-        "{}{}:{}@{}:{}",
-        config.db_protocol, config.db_user, config.db_password, config.db_url, config.db_port
+    let cfg = config::load();
+
+    info!(
+        "Config loaded: extern_port={} cache_url={} cache_ttl_secs={} body_limit_bytes={} debug={}",
+        cfg.extern_port, cfg.cache_url, cfg.cache_ttl_secs, cfg.body_limit_bytes, cfg.debug
     );
-    //let db_addr = format!("{}{}:{}", config.db_protocol, config.db_url, config.db_port);
 
-    info!("Connecting to Redis at {}", cache_addr);
-    info!("Connecting to MongoDB at {}", db_addr);
+    // TODO(next slice): wire up Redis connection using cfg.cache_url / cfg.cache_ttl_secs
+    // TODO(next slice): add /messages routes and auth middleware
 
-    let cache_conn = construct_redis_conn(&cache_addr).await;
-    let db_conn = construct_mongodb_conn(&db_addr).await;
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .layer(CorsLayer::permissive())
+        .layer(RequestBodyLimitLayer::new(cfg.body_limit_bytes));
 
-    let cf_import = match init_cuckoo_filter(db_conn.clone()).await {
-        Ok(cf) => cf,
-        Err(e) => panic!("Failed to initialize cuckoo filter with error: {}", e),
+    let addr = format!("[::]:{}", cfg.extern_port);
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!("Failed to bind to {addr}: {e}");
+            return;
+        }
     };
-    let cuckoo_filter = Arc::new(Mutex::new(cf_import));
 
-    info!("Cuckoo filter initialized successfully");
+    info!("Listening on {addr}");
 
-    let routes = get_data_with_id(db_conn.clone(), cache_conn.clone(), cuckoo_filter.clone())
-        .or(get_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-        ))
-        .or(set_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-            config.body_limit,
-            config.cache_ttl,
-        ))
-        .or(del_data(
-            db_conn.clone(),
-            cache_conn.clone(),
-            cuckoo_filter.clone(),
-        ))
-        .recover(handle_rejection);
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!("Server error: {e}");
+    }
+}
 
-    print_welcome(&db_addr, &cache_addr);
-
-    info!("Server running at localhost:{}", config.extern_port);
-
-    warp::serve(routes)
-        .run(([0, 0, 0, 0], config.extern_port))
-        .await;
+async fn healthz() -> &'static str {
+    "ok"
 }
