@@ -1,0 +1,108 @@
+name: Build, scan and push image
+
+# Builds the valence image, scans it with Trivy, and pushes only clean images to the
+# GitHub Container Registry (GHCR): ghcr.io/<owner>/valence.
+#
+# The image is built once into the local daemon, scanned, and only then pushed (the push
+# reuses the cached build layers). Pull requests build and scan without pushing, so a
+# vulnerable or broken image is caught before merge and never published. Pushes to main and
+# published releases also push the image.
+#
+# Tags: release -> version + `latest`; push to main -> `main`, `latest`, and the commit sha,
+# so deployments can pin by reference or track `latest` (main tip). The testnet tracks `latest`.
+
+on:
+  release:
+    types: [published]
+  push:
+    branches: [main]
+  # On PRs, build and scan (no push) when the image's contents can change: the Dockerfile,
+  # the sources compiled into the binary, the dependency set, or this workflow.
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/images.yml"
+      - ".trivyignore"
+
+concurrency:
+  group: images-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Opt into Node.js 24 for JS actions ahead of GHES runner defaults.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  TRIVY_SEVERITY: CRITICAL,HIGH
+
+jobs:
+  build-scan-push:
+    name: valence
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build once into the local daemon so Trivy scans the exact image that will be
+      # published. The push step below reuses these cached layers.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: valence:scan
+          platforms: linux/amd64
+          cache-from: type=gha,scope=valence
+          cache-to: type=gha,mode=max,scope=valence
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: valence:scan
+          severity: ${{ env.TRIVY_SEVERITY }}
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        if: github.event_name != 'pull_request'
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/valence
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'release' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+
+      # Reuses the layers built above (cache hit), so this only assembles and pushes.
+      - name: Push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha,scope=valence
+          cache-to: type=gha,mode=max,scope=valence
